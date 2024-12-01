@@ -2,13 +2,16 @@ import torch
 import torchvision.models as models
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from knnRtree import KnnRTree
+from Search.knnRtree import KnnRTree
+from Search.KnnHighD import knnHighD_LSH
 from PIL import Image
 import numpy as np
 import heapq
 import os
 from sklearn.decomposition import PCA
 
+
+# === Reducción de Dimensiones ===
 
 def reduce_dimensions(features, n_components=100):
     """Reduce las dimensiones de los vectores de características usando PCA."""
@@ -108,7 +111,7 @@ def main():
     transform = get_transform()
 
     # Extracción de características
-    query_image_path = 'poke2/0965b2be7b9c436a870dcbb797d57818.jpg'
+    query_image_path = 'poke2/00000001.jpg'
     query_feature = extract_features(query_image_path, feature_extractor, transform)
 
     folder_path = 'poke2'
@@ -151,6 +154,14 @@ def main():
     # Visualización
     plot_distance_distribution(data_features_reduced, query_feature_reduced)
 
+    # Búsqueda KNN con Faiss
+    knn_faiss = knnHighD_LSH(dimension = data_features_reduced.shape[1], num_bits = 512)
+    knn_faiss.insert(data_features_reduced)
+
+    distances, indices = knn_faiss.knn_search(query_feature_reduced.reshape(1, -1), k)
+    print("\nKNN con FAISS:")
+    for dist, idx in zip(distances[0], indices[0]):
+        print(f"- {image_paths[idx]} (Distancia: {dist:.4f})")
 
 if __name__ == "__main__":
     main()
