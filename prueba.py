@@ -7,128 +7,150 @@ from PIL import Image
 import numpy as np
 import heapq
 import os
+from sklearn.decomposition import PCA
 
-# Cargar modelo ResNet-50 preentrenado
-resnet50 = models.resnet50(pretrained=True).eval()
-resnet50.eval()  # Modo de evaluación
 
-# Eliminar la capa de clasificación
-feature_extractor = torch.nn.Sequential(*list(resnet50.children())[:-1])
+def reduce_dimensions(features, n_components=100):
+    """Reduce las dimensiones de los vectores de características usando PCA."""
+    pca = PCA(n_components=n_components)
+    reduced_features = pca.fit_transform(features)
+    return reduced_features, pca
 
-# Definir transformaciones de imagen
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),  # Redimensionar la imagen
-    transforms.ToTensor(),  # Convertir a tensor
-    transforms.Normalize(  # Normalización basada en ImageNet
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
 
-# Función para extraer el vector de características
-def extract_features(image_path):
+def reduce_single_feature(feature, pca_model):
+    """Reduce las dimensiones de un único vector usando un modelo PCA preajustado."""
+    return pca_model.transform([feature])[0]
+
+
+# === Configuración ===
+
+def load_resnet_feature_extractor():
+    """Carga un modelo ResNet50 preentrenado como extractor de características."""
+    resnet50 = models.resnet50(pretrained=True).eval()
+    feature_extractor = torch.nn.Sequential(*list(resnet50.children())[:-1])
+    return feature_extractor
+
+
+def get_transform():
+    """Define las transformaciones necesarias para preprocesar las imágenes."""
+    return transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+
+# === Extracción de características ===
+
+def extract_features(image_path, feature_extractor, transform):
+    """Extrae el vector de características de una imagen dada."""
     image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0)  # Agregar una dimensión para el batch
-
-    # Extraer características
+    input_tensor = transform(image).unsqueeze(0)
     with torch.no_grad():
         features = feature_extractor(input_tensor)
+    return features.squeeze().numpy()
 
-    # Aplanar las características para obtener el vector final
-    feature_vector = features.squeeze().numpy()
-    return feature_vector
 
-# Búsqueda KNN con Cola de Prioridad para imágenes
-def knn_priority_queue_images(data_features, query_feature, k):
+def extract_features_from_folder(folder_path, feature_extractor, transform):
+    """Extrae características de todas las imágenes en una carpeta."""
+    image_paths = [os.path.join(folder_path, filename) for filename in os.listdir(folder_path) if filename.endswith(('.jpg', '.jpeg', '.png'))]
+    features = [extract_features(image_path, feature_extractor, transform) for image_path in image_paths]
+    return image_paths, features
+
+
+# === KNN ===
+
+def knn_priority_queue(data_features, query_feature, k):
+    """Realiza la búsqueda KNN usando una cola de prioridad."""
     heap = []
-
-    # Calcular la distancia y mantener solo los k vecinos más cercanos
     for idx, feature in enumerate(data_features):
-        dist = np.linalg.norm(query_feature - feature)  # Distancia Euclidiana
-
+        dist = np.linalg.norm(query_feature - feature)
         if len(heap) < k:
-            heapq.heappush(heap, (-dist, idx))  # Guardar distancias negativas
+            heapq.heappush(heap, (-dist, idx))
         else:
-            heapq.heappushpop(heap, (-dist, idx))  # Mantener solo K vecinos más cercanos
-
-    # Extraer los índices de los k vecinos más cercanos
-    nearest_neighbors = [idx for _, idx in heap]
-    return nearest_neighbors
-
-# Ruta de la imagen de consulta
-query_image_path = 'pokemon/Abra/00000000.png'  # Especificar la ruta completa de la imagen de consulta
-query_feature = extract_features(query_image_path)
-
-# Cargar todas las imágenes de la carpeta
-image_folder = 'git pokemon/Abra'
-image_paths = [os.path.join(image_folder, filename) for filename in os.listdir(image_folder) if filename.endswith(('.jpg', '.jpeg', '.png'))]
-
-# Extraer las características de todas las imágenes en la carpeta
-data_features = [extract_features(image_path) for image_path in image_paths]
-
-# Número de vecinos más cercanos
-k = 5  # Número de vecinos más cercanos
-
-# Buscar las k imágenes más similares usando KNN
-similar_images = knn_priority_queue_images(data_features, query_feature, k)
-
-# Mostrar los resultados
-print(f"Imagen consulta: {query_image_path}")
-print("5 imágenes más similares:")
-for idx in similar_images:
-    print(f"- {image_paths[idx]}")
-print("-" * 50)
+            heapq.heappushpop(heap, (-dist, idx))
+    return [(abs(dist), idx) for dist, idx in sorted(heap)]
 
 
-# Búsqueda por Rango para imágenes
-def range_search_images(data_features, query_feature, radius):
+# === Búsqueda por rango ===
+
+def range_search(data_features, query_feature, radius):
+    """Realiza una búsqueda por rango en las características."""
     neighbors = []
-
-    # Calcular las distancias y devolver los objetos dentro del radio
     for idx, feature in enumerate(data_features):
-        dist = np.linalg.norm(query_feature - feature)  # Distancia Euclidiana
+        dist = np.linalg.norm(query_feature - feature)
         if dist <= radius:
             neighbors.append((dist, idx))
-
-    # Ordenar los resultados por distancia
     neighbors.sort(key=lambda x: x[0])
     return neighbors
 
 
-# Ejemplo de uso para búsqueda por rango
-radius = 0.5  # Radio de búsqueda
-neighbors = range_search_images(data_features, query_feature, radius)
-print("Imágenes dentro del radio de búsqueda:")
-for _, idx in neighbors:
-    print(f"- {image_paths[idx]}")
-print("-" * 50)
+# === Visualización ===
 
-
-# Función para graficar la distribución de distancias entre imágenes
-def plot_distance_distribution_images(data_features, query_feature):
-    distances = []
-    for feature in data_features:
-        dist = np.linalg.norm(query_feature - feature)
-        distances.append(dist)
-
-    # Graficar el histograma de distancias
+def plot_distance_distribution(data_features, query_feature):
+    """Grafica la distribución de distancias entre imágenes."""
+    distances = [np.linalg.norm(query_feature - feature) for feature in data_features]
     plt.hist(distances, bins=30, edgecolor='black')
-    plt.title('Distribución de Distancias (Imágenes)')
+    plt.title('Distribución de Distancias')
     plt.xlabel('Distancia')
     plt.ylabel('Frecuencia')
     plt.show()
 
-# Ejemplo de uso para graficar la distribución de distancias
-plot_distance_distribution_images(data_features, query_feature)
 
-# Consulta KNN
-rtree = KnnRTree()
-k = 5
+# === Principal ===
 
-rtree.insert(data_features)
+def main():
+    # Configuración
+    feature_extractor = load_resnet_feature_extractor()
+    transform = get_transform()
 
-print(f"Buscando {k} vecinos más cercanos...")
-knn_results = rtree.knn_search(query_feature, k)
-print("Imágenes más similares:")
-for dist, result_id in knn_results:
-    print(f"- {image_paths[result_id]} (Distancia: {dist:.4f})")
+    # Extracción de características
+    query_image_path = 'poke2/0965b2be7b9c436a870dcbb797d57818.jpg'
+    query_feature = extract_features(query_image_path, feature_extractor, transform)
+
+    folder_path = 'poke2'
+    image_paths, data_features = extract_features_from_folder(folder_path, feature_extractor, transform)
+
+    # Reducción de dimensiones para características de datos y consulta
+    if len(data_features) > 1:
+        pca = PCA(n_components=min(100, len(data_features[0])))
+        data_features_reduced, pca_model = reduce_dimensions(data_features, n_components=pca.n_components)
+        query_feature_reduced = reduce_single_feature(query_feature, pca_model)
+    else:
+        # Usar los vectores originales si no es posible aplicar PCA
+        data_features_reduced = data_features
+        query_feature_reduced = query_feature
+
+    # KNN sin R-tree
+    k = 5
+    knn_results = knn_priority_queue(data_features_reduced, query_feature_reduced, k)
+    print("\nKNN (sin R-Tree):")
+    for dist, idx in knn_results:
+        print(f"- {image_paths[idx]} (Distancia: {dist:.4f})")
+
+    # Búsqueda por rango sin R-tree
+    radius = 0.5
+    range_results = range_search(data_features_reduced, query_feature_reduced, radius)
+    print("\nBúsqueda por rango (sin R-Tree):")
+    for dist, idx in range_results:
+        print(f"- {image_paths[idx]} (Distancia: {dist:.4f})")
+
+    # Inserción en lotes en el R-tree
+    rtree = KnnRTree()
+    rtree.insert_in_batches(data_features_reduced, batch_size=25)
+
+    # Búsqueda KNN con R-tree
+    knn_rtree_results = rtree.knn_search(query_feature_reduced, k)
+    print("\nImágenes más similares con R-Tree:")
+    for dist, result_id in knn_rtree_results:
+        print(f"- {image_paths[result_id]} (Distancia: {dist:.4f})")
+
+    # Visualización
+    plot_distance_distribution(data_features_reduced, query_feature_reduced)
+
+
+if __name__ == "__main__":
+    main()
